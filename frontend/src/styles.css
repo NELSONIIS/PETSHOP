@@ -1,0 +1,51 @@
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --p-50: 237 247 240; --p-100: 211 235 218; --p-200: 169 214 184; --p-300: 120 188 147; --p-400: 70 160 111;
+  --p-500: 42 134 86; --p-600: 30 107 68; --p-700: 23 86 58; --p-800: 18 69 48; --p-900: 12 50 35;
+  --primary: 30 107 68; --on-primary: 255 255 255;
+  --s-50: 230 246 244; --s-100: 194 232 227; --s-500: 15 118 110; --s-600: 13 95 89; --s-700: 11 75 71; --secondary: 13 95 89;
+  --a-400: 240 138 107; --a-500: 232 112 79; --a-600: 210 89 58; --accent: 232 112 79;
+  --bg: 255 255 255; --bg-warm: 250 247 242; --surface: 255 255 255; --border: 232 226 216;
+  --text: 28 42 36; --text-muted: 94 107 100;
+  --success: 30 142 90; --warning: 185 122 0; --danger: 200 64 47; --info: 43 108 176;
+  color-scheme: light;
+}
+.dark {
+  --primary: 70 160 111; --on-primary: 12 50 35;
+  --p-50: 22 40 31; --p-100: 26 52 39; --p-200: 33 66 49; --p-300: 48 96 68; --p-400: 70 160 111; --p-500: 92 180 130;
+  --p-600: 70 160 111; --p-700: 120 188 147; --p-800: 169 214 184; --p-900: 211 235 218;
+  --secondary: 61 182 171; --s-50: 17 40 38; --s-100: 22 56 53; --s-500: 61 182 171; --s-600: 61 182 171; --s-700: 120 215 207;
+  --accent: 240 138 107;
+  --bg: 15 23 20; --bg-warm: 19 30 25; --surface: 22 33 28; --border: 38 52 45;
+  --text: 232 240 235; --text-muted: 157 176 165;
+  --success: 72 190 130; --warning: 230 169 50; --danger: 235 110 95; --info: 110 168 228;
+  color-scheme: dark;
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply bg-bg text-ink font-sans antialiased; font-feature-settings: 'cv11', 'ss01'; }
+  h1, h2, h3, h4 { @apply font-semibold tracking-tight text-ink; }
+  :focus-visible { @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-bg; }
+  ::selection { background: rgb(var(--p-200)); color: #0c3223; }
+  img { @apply max-w-full; }
+}
+@layer components {
+  .tnum { font-variant-numeric: tabular-nums; }
+  .container-page { @apply mx-auto w-full max-w-7xl px-4 md:px-6; }
+  .card { @apply rounded-card border border-line bg-surface shadow-card; }
+  .scroll-x { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .scroll-x::-webkit-scrollbar { display: none; }
+  .safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 0px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

@@ -1,0 +1,1286 @@
+openapi: 3.0.3
+info:
+  title: PETORA API
+  version: 1.0.0
+  description: |
+    Single contract shared by the React web app and the Flutter Android app. All routes live under `/api/v1`.
+
+    ## Envelope
+    * Success: `{ "data": <payload>, "meta": { page, per_page, total, total_pages }? }` (`meta` only on paginated lists).
+    * Error: `{ "error": { "code", "message", "details": [{field, message}]?, "extra"?, "request_id" } }`.
+    * Every response carries `X-Request-ID`. Quote it when contacting support.
+
+    ## Authentication
+    One scheme, two transports.
+    * **Web** (default): `POST /auth/login` sets HttpOnly cookies `petora_at` (15 min), `petora_rt` (30 d, path `/api/v1/auth`) and a readable `petora_csrf` cookie.
+      Send `X-CSRF-Token: <petora_csrf>` on every POST/PUT/PATCH/DELETE. On a `401`, call `POST /auth/refresh` once and retry.
+    * **Mobile**: send header `X-Client: mobile`. Login/register/refresh return `access_token` + `refresh_token` in the body; send
+      `Authorization: Bearer <access_token>`. Refresh tokens rotate on every use — store the new one and never refresh concurrently
+      (single-flight). Replaying an old refresh token revokes the session.
+    * Staff (admin portal) accounts must enable TOTP MFA; `/admin/*` returns `403 mfa_required` until the session is MFA-verified.
+
+    ## Roles / permissions
+    `account_type`: `buyer`, `seller`, `staff`. Staff roles: `moderator`, `finance`, `support`, `super_admin`, each mapped to permissions
+    (`users.view`, `sellers.verify`, `listings.moderate`, `payments.view`, `refunds.create`, `settings.manage`, …). The backend is authoritative.
+
+    ## Money
+    Always integer minor units (paise) + ISO currency: `price_minor: 1500000, currency: "INR"` = ₹15,000.00.
+
+    ## Pagination, filtering, sorting
+    `?page=1&per_page=20` (max 50, 100 for admin lists). Filters are query params documented per route. `sort` values are listed per route.
+    On admin lists `status=all` means no status filter. When `status` is omitted, `/admin/listings` defaults to `pending`, `/admin/reports` to `open` and `/admin/enquiries` to `reported`; other lists default to all.
+
+    ## Rate limits
+    Auth endpoints are limited per IP; writes per user. Exceeding returns `429 rate_limited` with `Retry-After`.
+
+    ## Idempotency
+    `POST /subscriptions/checkout` requires an `idempotency_key` (client-generated UUID) in the body: replays return the original payment.
+    Payment webhooks are deduplicated by provider event id. Refund requests take an `idempotency_key`.
+
+    ## Contact authorization
+    Seller phone/WhatsApp/email are **never** present in listing or seller responses. They are returned only by
+    `POST /pets/{id}/contact-unlock` after the backend verifies an active entitlement (or a prior unlock). Otherwise
+    `402 membership_required` (extra.suggested_plans) is returned.
+
+    ## Error codes
+    `validation_failed`(422) `bad_request`(400) `unauthorized`(401) `forbidden`(403) `not_found`(404) `conflict`(409) `rate_limited`(429)
+    `membership_required`(402) `subscription_required`(402) `limit_reached`(409) `verification_required`(403) `payment_failed`(402)
+    `mfa_required`(401/403) `account_suspended`(403) `maintenance`(503) `internal_error`(500).
+servers:
+  - url: https://petora.in/api/v1
+  - url: http://localhost:8080/api/v1
+tags:
+  - {name: Auth}
+  - {name: Public}
+  - {name: Account}
+  - {name: Buyer}
+  - {name: Seller}
+  - {name: Billing}
+  - {name: Admin}
+security: [{cookieAuth: []}, {bearerAuth: []}]
+paths:
+  /config:
+    get:
+      tags: [Public]
+      summary: Public platform configuration (brand, currency, limits, feature flags)
+      security: []
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/PublicConfigResponse'}}}}
+  /categories:
+    get:
+      tags: [Public]
+      summary: Active categories with breeds
+      security: []
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Category'}}}}}}}
+  /categories/{slug}:
+    get:
+      tags: [Public]
+      security: []
+      parameters: [{$ref: '#/components/parameters/slug'}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Category'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /pets:
+    get:
+      tags: [Public]
+      summary: Search published pets
+      description: Only approved, available-or-reserved listings from sellers with an eligible subscription are returned.
+      security: []
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: Full-text search}
+        - {name: category, in: query, schema: {type: string}, description: Category slug}
+        - {name: breed, in: query, schema: {type: string}, description: Breed slug (requires category) or breed id}
+        - {name: min_price, in: query, schema: {type: integer}, description: Minor units}
+        - {name: max_price, in: query, schema: {type: integer}}
+        - {name: min_age_months, in: query, schema: {type: integer}}
+        - {name: max_age_months, in: query, schema: {type: integer}}
+        - {name: gender, in: query, schema: {type: string, enum: [male, female, unknown]}}
+        - {name: city, in: query, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+        - {name: lat, in: query, schema: {type: number}}
+        - {name: lng, in: query, schema: {type: number}}
+        - {name: radius_km, in: query, schema: {type: integer, maximum: 1000}, description: Requires lat+lng}
+        - {name: seller_type, in: query, schema: {type: string, enum: [individual, business]}}
+        - {name: verified_seller, in: query, schema: {type: boolean}}
+        - {name: listing_type, in: query, schema: {type: string, enum: [sale, adoption]}}
+        - {name: vaccination, in: query, schema: {type: string, enum: [complete, partial, none]}, description: Vaccination disclosure}
+        - {name: availability, in: query, schema: {type: string, enum: [available, reserved]}}
+        - {name: listed_within_days, in: query, schema: {type: integer}}
+        - {name: featured, in: query, schema: {type: boolean}}
+        - {name: sort, in: query, schema: {type: string, enum: [newest, price_asc, price_desc, relevance, nearest], default: newest}}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/per_page'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListingPage'}}}}
+  /pets/{id}:
+    get:
+      tags: [Public]
+      summary: Pet detail by id or slug
+      security: []
+      parameters: [{name: id, in: path, required: true, schema: {type: string}, description: UUID or slug}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingDetail'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /pets/{id}/similar:
+    get:
+      tags: [Public]
+      security: []
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses:
+        '200': {description: Up to 8 listings, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/ListingCard'}}}}}}}
+  /pets/{id}/view:
+    post:
+      tags: [Public]
+      summary: Record a listing view (deduplicated per visitor per day; powers analytics and recently-viewed)
+      security: []
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses:
+        '204': {description: Recorded}
+  /sellers:
+    get:
+      tags: [Public]
+      summary: Verified sellers
+      security: []
+      parameters: [{name: city, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/SellerPublic'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}
+  /sellers/{slug}:
+    get:
+      tags: [Public]
+      security: []
+      parameters: [{$ref: '#/components/parameters/slug'}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/SellerPublic'}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /sellers/{slug}/pets:
+    get:
+      tags: [Public]
+      security: []
+      parameters: [{$ref: '#/components/parameters/slug'}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListingPage'}}}}
+  /subscription-plans:
+    get:
+      tags: [Public]
+      summary: Active plans
+      security: []
+      parameters: [{name: audience, in: query, schema: {type: string, enum: [buyer, seller]}}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Plan'}}}}}}}
+  /legal/{slug}:
+    get:
+      tags: [Public]
+      summary: Current published legal page (privacy, terms, refund-policy, seller-policy, safety)
+      security: []
+      parameters: [{name: slug, in: path, required: true, schema: {type: string, enum: [privacy, terms, refund-policy, seller-policy, safety]}}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/LegalPage'}}}}}}
+  /content/{key}:
+    get:
+      tags: [Public]
+      summary: CMS block (`home`, `faq`) managed in the admin portal
+      description: '`home` = {hero_title, hero_subtitle, how_it_works:[{title, body}], adoption_title, adoption_body}; `faq` = {items:[{q, a}]}. Admins may add keys; clients ignore unknown keys.'
+      security: []
+      parameters: [{name: key, in: path, required: true, schema: {type: string, enum: [home, faq]}}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: object, additionalProperties: true}}}}}}
+  /support/contact:
+    post:
+      tags: [Public]
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name, email, message], properties: {name: {type: string}, email: {type: string}, subject: {type: string}, message: {type: string}}}}}}
+      responses:
+        '204': {description: Received}
+        '429': {$ref: '#/components/responses/Error'}
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RegisterRequest'}}}}
+      responses:
+        '201': {description: Created and signed in, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/AuthResult'}}}}}}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      description: Staff with MFA must include `otp`; otherwise `401 mfa_required`. 5 failures lock the account for 15 minutes.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email, password], properties: {email: {type: string}, password: {type: string}, otp: {type: string}}}}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/AuthResult'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      description: 'Web uses the refresh cookie (empty body). Mobile sends `{refresh_token}` with `X-Client: mobile`.'
+      requestBody: {required: false, content: {application/json: {schema: {type: object, properties: {refresh_token: {type: string}}}}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/AuthResult'}}}}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /auth/logout:
+    post:
+      tags: [Auth]
+      responses: {'204': {description: Signed out}}
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [code], properties: {code: {type: string, minLength: 6, maxLength: 6}}}}}}
+      responses: {'204': {description: Verified}, '400': {$ref: '#/components/responses/Error'}}
+  /auth/resend-verification:
+    post:
+      tags: [Auth]
+      responses: {'204': {description: Sent}, '409': {$ref: '#/components/responses/Error'}}
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email], properties: {email: {type: string}}}}}}
+      responses: {'200': {description: Always succeeds (no account enumeration)}}
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email, code, password], properties: {email: {type: string}, code: {type: string}, password: {type: string}}}}}}
+      responses: {'204': {description: Password changed; all sessions revoked}, '400': {$ref: '#/components/responses/Error'}}
+  /auth/mfa/setup:
+    post:
+      tags: [Auth]
+      summary: Begin TOTP enrolment (staff)
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: object, properties: {secret: {type: string}, otpauth_uri: {type: string}}}}}}}}}
+  /auth/mfa/enable:
+    post:
+      tags: [Auth]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [code], properties: {code: {type: string}}}}}}
+      responses: {'204': {description: Enabled; current session becomes MFA-verified}, '422': {$ref: '#/components/responses/Error'}}
+
+  /me:
+    get:
+      tags: [Account]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/User'}}}}}}}
+    patch:
+      tags: [Account]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {name: {type: string}, phone: {type: string}}}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/User'}}}}}}}
+  /me/change-password:
+    post:
+      tags: [Account]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [current_password, new_password], properties: {current_password: {type: string}, new_password: {type: string}}}}}}
+      responses: {'204': {description: Changed; other sessions revoked}}
+  /me/sessions:
+    get:
+      tags: [Account]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/SessionInfo'}}}}}}}}
+  /me/sessions/{id}:
+    delete:
+      tags: [Account]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Revoked}}
+  /me/delete-account:
+    post:
+      tags: [Account]
+      summary: Permanently delete the account (personal data anonymised; financial records retained)
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [password], properties: {password: {type: string}}}}}}
+      responses: {'204': {description: Deleted}}
+  /notifications:
+    get:
+      tags: [Account]
+      parameters: [{name: unread, in: query, schema: {type: boolean}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Notification'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /notifications/unread-count:
+    get:
+      tags: [Account]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: object, properties: {count: {type: integer}}}}}}}}}
+  /notifications/{id}/read:
+    post:
+      tags: [Account]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Marked read}}
+  /notifications/read-all:
+    post:
+      tags: [Account]
+      responses: {'204': {description: Marked read}}
+  /favourites:
+    get:
+      tags: [Buyer]
+      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/ListingPage'}}}}}
+    post:
+      tags: [Buyer]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [listing_id], properties: {listing_id: {type: string, format: uuid}}}}}}
+      responses: {'204': {description: Saved (idempotent)}}
+  /favourites/{listingId}:
+    delete:
+      tags: [Buyer]
+      parameters: [{name: listingId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: Removed}}
+  /reports:
+    post:
+      tags: [Account]
+      summary: Report a listing, seller, user or enquiry
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [target_type, target_id, reason], properties: {target_type: {type: string, enum: [listing, seller, user, enquiry]}, target_id: {type: string, format: uuid}, reason: {type: string, enum: [spam, scam, prohibited, misleading, animal_welfare, abuse, other]}, details: {type: string}}}}}}
+      responses: {'201': {description: Created}, '409': {$ref: '#/components/responses/Error'}}
+  /blocks:
+    get:
+      tags: [Account]
+      responses: {'200': {description: Blocked users}}
+    post:
+      tags: [Account]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [user_id], properties: {user_id: {type: string, format: uuid}}}}}}
+      responses: {'204': {description: Blocked}}
+  /blocks/{userId}:
+    delete:
+      tags: [Account]
+      parameters: [{name: userId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: Unblocked}}
+  /disputes:
+    get:
+      tags: [Account]
+      responses: {'200': {description: My disputes, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Dispute'}}}}}}}}
+    post:
+      tags: [Account]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [kind, subject, message], properties: {kind: {type: string, enum: [listing_appeal, payment, conduct, other]}, subject: {type: string}, message: {type: string}, listing_id: {type: string, format: uuid}, payment_id: {type: string, format: uuid}, enquiry_id: {type: string, format: uuid}}}}}}
+      responses: {'201': {description: Created}}
+
+  /buyer/profile:
+    get:
+      tags: [Buyer]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/BuyerProfile'}}}}}}}
+    put:
+      tags: [Buyer]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/BuyerProfile'}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/BuyerProfile'}}}}}}}
+  /buyer/dashboard:
+    get:
+      tags: [Buyer]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/BuyerDashboard'}}}}}}}
+  /buyer/recently-viewed:
+    get:
+      tags: [Buyer]
+      responses: {'200': {description: Up to 20 listings, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/ListingCard'}}}}}}}}
+  /pets/{id}/contact-unlock:
+    post:
+      tags: [Buyer]
+      summary: Unlock seller contact details
+      description: |
+        Idempotent. Requires verified email. If this buyer already unlocked this listing, returns the contact again without consuming
+        allowance. Otherwise requires an active buyer membership with remaining contact unlocks; records a `contact_unlock`.
+        Returns `402 membership_required` when not entitled — no contact data is ever included in errors.
+        `extra` = `{reason: no_membership | quota_exhausted, suggested_plans: [{id, name, total_minor, currency}]}` (summaries; fetch full plans from /subscription-plans).
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses:
+        '200': {description: Unlocked, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ContactInfo'}}}}}}
+        '402': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /pets/{id}/enquiries:
+    post:
+      tags: [Buyer]
+      summary: Start an enquiry thread (one per buyer per listing)
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [message], properties: {message: {type: string, minLength: 5, maxLength: 2000}}}}}}
+      responses:
+        '201': {description: Created, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/EnquirySummary'}}}}}}
+        '402': {$ref: '#/components/responses/Error'}
+        '409': {description: Duplicate - body contains extra.enquiry_id, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorBody'}}}}
+        '429': {$ref: '#/components/responses/Error'}
+  /buyer/enquiries:
+    get:
+      tags: [Buyer]
+      parameters: [{name: status, in: query, schema: {type: string, enum: [pending, viewed, responded, closed, reported]}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/EnquirySummary'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /buyer/enquiries/{id}:
+    get:
+      tags: [Buyer]
+      description: Only the owning buyer may read; others get 404. Marks seller messages as read.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/EnquiryDetail'}}}}}}, '404': {$ref: '#/components/responses/Error'}}
+  /buyer/enquiries/{id}/messages:
+    post:
+      tags: [Buyer]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [body], properties: {body: {type: string}}}}}}
+      responses: {'201': {description: Sent, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Message'}}}}}}}
+  /buyer/enquiries/{id}/close:
+    post:
+      tags: [Buyer]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Closed}}
+
+  /seller/dashboard:
+    get:
+      tags: [Seller]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/SellerDashboard'}}}}}}}
+  /seller/profile:
+    get:
+      tags: [Seller]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/SellerProfileOwner'}}}}}}}
+    put:
+      tags: [Seller]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SellerProfileInput'}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/SellerProfileOwner'}}}}}}}
+  /seller/logo:
+    post:
+      tags: [Seller]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [file], properties: {file: {type: string, format: binary}}}}}}
+      responses: {'200': {description: Updated profile}}
+  /seller/verification:
+    get:
+      tags: [Seller]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/VerificationStatus'}}}}}}}
+  /seller/verification/submit:
+    post:
+      tags: [Seller]
+      summary: Submit profile + documents for review
+      description: Requires seller profile fields (city, state, contact phone) and at least one identity document.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {jurisdiction_state: {type: string}}}}}}
+      responses: {'200': {description: Pending review, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/VerificationStatus'}}}}}}, '422': {$ref: '#/components/responses/Error'}}
+  /seller/documents:
+    get:
+      tags: [Seller]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/SellerDocument'}}}}}}}}
+    post:
+      tags: [Seller]
+      description: Multipart. PDF/JPEG/PNG, max 10 MB. Stored in private storage; never publicly accessible.
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [file, kind], properties: {file: {type: string, format: binary}, kind: {type: string, enum: [identity, business_registration, trade_licence, breeder_registration, address_proof, other]}}}}}}
+      responses: {'201': {description: Uploaded, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/SellerDocument'}}}}}}}
+  /seller/documents/{id}:
+    delete:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Deleted}}
+  /seller/listings:
+    get:
+      tags: [Seller]
+      parameters: [{name: status, in: query, schema: {type: string, enum: [draft, pending, approved, rejected, suspended, expired, sold]}, description: '`sold` = availability sold/unavailable'}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/ListingOwner'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+    post:
+      tags: [Seller]
+      summary: Create a draft listing
+      description: Fails with `limit_reached` when the plan's listing allowance (non-archived listings) is used up; requires an active seller subscription.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ListingInput'}}}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingOwner'}}}}}}, '402': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+  /seller/listings/{id}:
+    get:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingOwner'}}}}}}, '404': {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Seller]
+      description: Editing an approved listing returns it to `pending` when content fields change (re-moderation).
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ListingInput'}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingOwner'}}}}}}}
+    delete:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Archived (soft-deleted)}}
+  /seller/listings/{id}/submit:
+    post:
+      tags: [Seller]
+      summary: Submit for moderation
+      description: Requires an active subscription, verified seller (for categories that demand it), >=1 image and complete required fields.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: Now `pending` (or `approved` if auto-approval is enabled), content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingOwner'}}}}}}, '402': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+  /seller/listings/{id}/availability:
+    patch:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [availability], properties: {availability: {type: string, enum: [available, reserved, sold, unavailable]}}}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingOwner'}}}}}}}
+  /seller/listings/{id}/images:
+    post:
+      tags: [Seller]
+      description: Multipart, field `file`. JPEG/PNG/WebP up to 8 MB; decoded and re-encoded server-side (EXIF stripped); thumb/medium/large variants generated.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [file], properties: {file: {type: string, format: binary}}}}}}
+      responses: {'201': {description: Uploaded, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Image'}}}}}}}
+  /seller/listings/{id}/images/order:
+    put:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [image_ids], properties: {image_ids: {type: array, items: {type: string, format: uuid}}}}}}}
+      responses: {'204': {description: Reordered}}
+  /seller/listings/{id}/images/{imageId}/cover:
+    put:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}, {name: imageId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: Cover set}}
+  /seller/listings/{id}/images/{imageId}:
+    delete:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}, {name: imageId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: Deleted}}
+  /seller/listings/{id}/analytics:
+    get:
+      tags: [Seller]
+      description: Requires the `analytics` entitlement.
+      parameters: [{$ref: '#/components/parameters/id'}, {name: days, in: query, schema: {type: integer, default: 30, maximum: 90}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingAnalytics'}}}}}}, '402': {$ref: '#/components/responses/Error'}}
+  /seller/enquiries:
+    get:
+      tags: [Seller]
+      parameters: [{name: status, in: query, schema: {type: string}}, {name: unread, in: query, schema: {type: boolean}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/EnquirySummary'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /seller/enquiries/{id}:
+    get:
+      tags: [Seller]
+      description: Marks buyer messages as read and the enquiry `viewed`. Only the listing's seller may read.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/EnquiryDetail'}}}}}}}
+  /seller/enquiries/{id}/messages:
+    post:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [body], properties: {body: {type: string}}}}}}
+      responses: {'201': {description: Sent, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Message'}}}}}}}
+  /seller/enquiries/{id}/close:
+    post:
+      tags: [Seller]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Closed}}
+
+  /subscriptions/current:
+    get:
+      tags: [Billing]
+      summary: Current subscription and remaining entitlements for the caller's audience (buyer or seller)
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/SubscriptionStatus'}}}}}}}
+  /subscriptions/checkout:
+    post:
+      tags: [Billing]
+      summary: Create a payment order for a plan
+      description: |
+        Price, tax and currency are computed server-side from the plan. Returns `409 already_subscribed` if the caller already holds this
+        audience's live subscription outside its renewal window (or an equal/lower plan during an active term). Replaying the same
+        `idempotency_key` returns the same payment. Seller plans require seller verification to be approved before publishing, not to buy.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [plan_id, idempotency_key], properties: {plan_id: {type: string, format: uuid}, idempotency_key: {type: string, minLength: 16, maxLength: 80}}}}}}
+      responses: {'201': {description: Order created, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Checkout'}}}}}}, '409': {$ref: '#/components/responses/Error'}}
+  /payments/{id}:
+    get:
+      tags: [Billing]
+      description: Poll for status after redirect/callback. `succeeded` only after server-side verification or a verified webhook.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Payment'}}}}}}}
+  /payments/{id}/verify:
+    post:
+      tags: [Billing]
+      summary: Verify a checkout result server-side
+      description: The client success callback is NOT proof of payment. The server verifies the provider signature and/or fetches the payment from the provider before activating anything. Idempotent.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {provider_payment_id: {type: string}, provider_order_id: {type: string}, signature: {type: string}}}}}}
+      responses: {'200': {description: Current payment state, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Payment'}}}}}}}
+  /payments/{id}/test-complete:
+    post:
+      tags: [Billing]
+      summary: TEST MODE ONLY - complete a test-provider payment
+      description: Exists only when `PAYMENT_PROVIDER=testmode` and `APP_ENV != production`; otherwise 404. Never represents a real charge.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [outcome], properties: {outcome: {type: string, enum: [success, failure]}}}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Payment'}}}}}}}
+  /subscriptions/{id}/cancel:
+    post:
+      tags: [Billing]
+      description: Per plan cancellation policy (end of period or immediate). No automatic refund; see refund policy.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/SubscriptionStatus'}}}}}}}
+  /billing/payments:
+    get:
+      tags: [Billing]
+      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Payment'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /billing/invoices:
+    get:
+      tags: [Billing]
+      parameters: [{$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Invoice'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /billing/invoices/{id}:
+    get:
+      tags: [Billing]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Invoice'}}}}}}}
+  /webhooks/{provider}:
+    post:
+      tags: [Billing]
+      summary: Payment provider webhook (razorpay)
+      description: Signature verified over the raw body (`X-Razorpay-Signature`). Events stored by provider event id (unique) and processed idempotently. Always 200 for duplicates.
+      security: []
+      parameters: [{name: provider, in: path, required: true, schema: {type: string, enum: [razorpay]}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {'200': {description: Accepted}, '400': {description: Bad signature}}
+
+  /admin/dashboard:
+    get:
+      tags: [Admin]
+      description: Requires `dashboard.view`. All figures are live database aggregates.
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/AdminDashboard'}}}}}}}
+  /admin/users:
+    get:
+      tags: [Admin]
+      description: Requires `users.view`.
+      parameters: [{name: q, in: query, schema: {type: string}}, {name: account_type, in: query, schema: {type: string}}, {name: status, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/AdminUser'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/users/{id}:
+    get:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/AdminUser'}}}}}}}
+  /admin/users/{id}/suspend:
+    post:
+      tags: [Admin]
+      description: Requires `users.manage`. Revokes all sessions. Body `{reason}` required.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string}}}}}}
+      responses: {'204': {description: Suspended}}
+  /admin/users/{id}/reinstate:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Reinstated}}
+  /admin/users/{id}/roles:
+    put:
+      tags: [Admin]
+      description: Requires `roles.manage`. Replaces staff roles of a staff account.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [roles], properties: {roles: {type: array, items: {type: string, enum: [moderator, finance, support, super_admin]}}}}}}}
+      responses: {'204': {description: Updated}}
+  /admin/staff:
+    post:
+      tags: [Admin]
+      description: Requires `roles.manage`. Creates a staff account with a temporary password (shown once); user must enable MFA at first login.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name, email, roles], properties: {name: {type: string}, email: {type: string}, roles: {type: array, items: {type: string}}}}}}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {type: object, properties: {data: {type: object, properties: {user: {$ref: '#/components/schemas/AdminUser'}, temporary_password: {type: string}}}}}}}}}
+  /admin/roles:
+    get:
+      tags: [Admin]
+      responses: {'200': {description: Roles with their permissions}}
+  /admin/sellers/verifications:
+    get:
+      tags: [Admin]
+      description: Requires `sellers.verify`.
+      parameters: [{name: status, in: query, schema: {type: string, enum: [pending, approved, rejected]}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/AdminVerification'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/sellers/verifications/{id}:
+    get:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/AdminVerification'}}}}}}}
+  /admin/sellers/verifications/{id}/approve:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: false, content: {application/json: {schema: {type: object, properties: {notes: {type: string}}}}}}
+      responses: {'204': {description: Approved}}
+  /admin/sellers/verifications/{id}/reject:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string}}}}}}
+      responses: {'204': {description: Rejected}}
+  /admin/sellers/documents/{id}/file:
+    get:
+      tags: [Admin]
+      summary: Download a private verification document (audited)
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: File stream, content: {application/octet-stream: {schema: {type: string, format: binary}}}}}
+  /admin/listings:
+    get:
+      tags: [Admin]
+      description: Requires `listings.moderate`.
+      parameters: [{name: status, in: query, schema: {type: string}}, {name: q, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/ListingOwner'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/listings/{id}:
+    get:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK incl. moderation history and auto-flags, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/ListingOwner'}}}}}}}
+  /admin/listings/{id}/approve:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Approved and published}}
+  /admin/listings/{id}/reject:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string}}}}}}
+      responses: {'204': {description: Rejected}}
+  /admin/listings/{id}/suspend:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string}}}}}}
+      responses: {'204': {description: Suspended (immediately hidden)}}
+  /admin/listings/{id}/reinstate:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Reinstated}}
+  /admin/categories:
+    get:
+      tags: [Admin]
+      responses: {'200': {description: All categories incl. inactive, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Category'}}}}}}}}
+    post:
+      tags: [Admin]
+      description: Requires `catalog.manage`.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CategoryInput'}}}}
+      responses: {'201': {description: Created}}
+  /admin/categories/{id}:
+    put:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CategoryInput'}}}}
+      responses: {'200': {description: Updated}}
+  /admin/categories/{id}/breeds:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name], properties: {name: {type: string}, is_active: {type: boolean}}}}}}
+      responses: {'201': {description: Created}}
+  /admin/breeds/{id}:
+    put:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {name: {type: string}, is_active: {type: boolean}}}}}}
+      responses: {'200': {description: Updated}}
+  /admin/plans:
+    get:
+      tags: [Admin]
+      responses: {'200': {description: All plans incl. inactive, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Plan'}}}}}}}}
+    post:
+      tags: [Admin]
+      description: Requires `plans.manage`. Changes never alter already-active subscriptions (entitlements are snapshotted).
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PlanInput'}}}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Plan'}}}}}}}
+  /admin/plans/{id}:
+    put:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PlanInput'}}}}
+      responses: {'200': {description: Updated, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Plan'}}}}}}}
+  /admin/subscriptions:
+    get:
+      tags: [Admin]
+      description: Requires `subscriptions.view`.
+      parameters: [{name: status, in: query, schema: {type: string}}, {name: audience, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/AdminSubscription'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/payments:
+    get:
+      tags: [Admin]
+      description: Requires `payments.view`.
+      parameters: [{name: status, in: query, schema: {type: string}}, {name: q, in: query, schema: {type: string}, description: "email, provider id or payment id"}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/AdminPayment'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/payments/{id}:
+    get:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'200': {description: OK incl. refunds, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/AdminPayment'}}}}}}}
+  /admin/payments/{id}/refunds:
+    post:
+      tags: [Admin]
+      summary: Issue a refund (finance)
+      description: Requires `refunds.create`. Atomic; amount cannot exceed the unrefunded balance. Full refund of the payment that activated a live subscription ends that subscription.
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [amount_minor, reason, idempotency_key], properties: {amount_minor: {type: integer}, reason: {type: string}, idempotency_key: {type: string}}}}}}
+      responses: {'201': {description: Refund recorded, content: {application/json: {schema: {type: object, properties: {data: {$ref: '#/components/schemas/Refund'}}}}}}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+  /admin/reports:
+    get:
+      tags: [Admin]
+      description: Requires `reports.manage`.
+      parameters: [{name: status, in: query, schema: {type: string}}, {name: target_type, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Report'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/reports/{id}/resolve:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [outcome, resolution], properties: {outcome: {type: string, enum: [resolved, dismissed]}, resolution: {type: string}, suspend_target: {type: boolean}}}}}}
+      responses: {'204': {description: Resolved}}
+  /admin/disputes:
+    get:
+      tags: [Admin]
+      parameters: [{name: status, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Dispute'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/disputes/{id}/resolve:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [outcome, resolution], properties: {outcome: {type: string, enum: [under_review, resolved, rejected]}, resolution: {type: string}}}}}}
+      responses: {'204': {description: Updated}}
+  /admin/enquiries:
+    get:
+      tags: [Admin]
+      summary: Abuse review (reported enquiries) - messages visible to staff only with reports.manage
+      parameters: [{name: status, in: query, schema: {type: string, default: reported}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK}}
+  /admin/settings:
+    get:
+      tags: [Admin]
+      description: Requires `settings.manage`.
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/Setting'}}}}}}}}
+  /admin/settings/{key}:
+    put:
+      tags: [Admin]
+      parameters: [{name: key, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [value], properties: {value: {}}}}}}
+      responses: {'204': {description: Updated and audited}}
+  /admin/content/{key}:
+    get:
+      tags: [Admin]
+      parameters: [{name: key, in: path, required: true, schema: {type: string, enum: [home, faq]}}]
+      responses: {'200': {description: OK}}
+    put:
+      tags: [Admin]
+      description: Requires `content.manage`.
+      parameters: [{name: key, in: path, required: true, schema: {type: string, enum: [home, faq]}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+      responses: {'204': {description: Updated}}
+  /admin/legal:
+    get:
+      tags: [Admin]
+      responses: {'200': {description: All versions of all legal pages}}
+  /admin/legal/{slug}:
+    post:
+      tags: [Admin]
+      summary: Publish a new version of a legal page
+      parameters: [{name: slug, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [title, body_md], properties: {title: {type: string}, body_md: {type: string}}}}}}
+      responses: {'201': {description: Published}}
+  /admin/notification-templates:
+    get:
+      tags: [Admin]
+      responses: {'200': {description: OK}}
+  /admin/notification-templates/{key}/{channel}:
+    put:
+      tags: [Admin]
+      parameters: [{name: key, in: path, required: true, schema: {type: string}}, {name: channel, in: path, required: true, schema: {type: string, enum: [in_app, email, sms]}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [body], properties: {subject: {type: string}, body: {type: string}, is_active: {type: boolean}}}}}}
+      responses: {'204': {description: Saved}}
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      description: Requires `audit.view`.
+      parameters: [{name: action, in: query, schema: {type: string}}, {name: actor_id, in: query, schema: {type: string}}, {name: entity_type, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/AuditLog'}}, meta: {$ref: '#/components/schemas/Meta'}}}}}}}
+  /admin/jobs:
+    get:
+      tags: [Admin]
+      summary: Background job monitor (dead-letter inspection)
+      parameters: [{name: status, in: query, schema: {type: string}}, {$ref: '#/components/parameters/page'}, {$ref: '#/components/parameters/per_page'}]
+      responses: {'200': {description: OK}}
+  /admin/jobs/{id}/retry:
+    post:
+      tags: [Admin]
+      parameters: [{$ref: '#/components/parameters/id'}]
+      responses: {'204': {description: Re-queued}}
+  /admin/analytics/revenue:
+    get:
+      tags: [Admin]
+      description: Requires `payments.view`. Daily succeeded revenue and counts for the last N days.
+      parameters: [{name: days, in: query, schema: {type: integer, default: 30, maximum: 365}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {type: object, properties: {date: {type: string, format: date}, revenue_minor: {type: integer}, payments: {type: integer}}}}}}}}}}
+
+components:
+  securitySchemes:
+    cookieAuth: {type: apiKey, in: cookie, name: petora_at, description: 'Web. Add X-CSRF-Token on unsafe methods.'}
+    bearerAuth: {type: http, scheme: bearer, description: 'Mobile (send X-Client: mobile).'}
+  parameters:
+    id: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    slug: {name: slug, in: path, required: true, schema: {type: string}}
+    page: {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+    per_page: {name: per_page, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+  responses:
+    Error:
+      description: Error
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorBody'}}}
+  schemas:
+    Meta: {type: object, properties: {page: {type: integer}, per_page: {type: integer}, total: {type: integer}, total_pages: {type: integer}}}
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            request_id: {type: string}
+            details: {type: array, items: {type: object, properties: {field: {type: string}, message: {type: string}}}}
+            extra: {type: object, additionalProperties: true}
+    PublicConfigResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            brand_name: {type: string}
+            currency: {type: string}
+            maintenance: {type: boolean}
+            payment_provider: {type: string, enum: [testmode, razorpay]}
+            razorpay_key_id: {type: string, description: Public key id only; present when provider=razorpay}
+            max_images_per_listing: {type: integer}
+            max_image_mb: {type: integer}
+            settings: {type: object, additionalProperties: true, description: Admin settings flagged public}
+    User:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string}
+        phone: {type: string, nullable: true}
+        name: {type: string}
+        account_type: {type: string, enum: [buyer, seller, staff]}
+        roles: {type: array, items: {type: string}}
+        permissions: {type: array, items: {type: string}, description: Staff only}
+        email_verified: {type: boolean}
+        mfa_enabled: {type: boolean}
+        mfa_verified: {type: boolean}
+        avatar_url: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
+    AuthResult:
+      type: object
+      properties:
+        user: {$ref: '#/components/schemas/User'}
+        access_token: {type: string, description: Mobile only}
+        refresh_token: {type: string, description: Mobile only}
+        expires_at: {type: string, format: date-time}
+        csrf_token: {type: string, description: Web only (mirrors the petora_csrf cookie)}
+    RegisterRequest:
+      type: object
+      required: [name, email, password, role, accept_terms]
+      properties:
+        name: {type: string}
+        email: {type: string, format: email}
+        phone: {type: string, description: '10-15 digits, optional leading +'}
+        password: {type: string, description: '>=10 chars with a letter and a digit'}
+        role: {type: string, enum: [buyer, seller]}
+        accept_terms: {type: boolean}
+    SessionInfo:
+      type: object
+      properties: {id: {type: string}, client: {type: string}, user_agent: {type: string}, ip: {type: string}, created_at: {type: string, format: date-time}, last_used_at: {type: string, format: date-time}, current: {type: boolean}}
+    Notification:
+      type: object
+      properties: {id: {type: string}, kind: {type: string}, title: {type: string}, body: {type: string}, data: {type: object, additionalProperties: true, description: 'Deep-link keys when relevant: enquiry_id, listing_id, subscription_id, payment_id, dispute_id'}, read: {type: boolean}, created_at: {type: string, format: date-time}}
+    Category:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        icon: {type: string}
+        description: '{type: string}'
+        sort_order: {type: integer}
+        is_active: {type: boolean}
+        requires_verified_seller: {type: boolean}
+        listing_count: {type: integer}
+        breeds: {type: array, items: {$ref: '#/components/schemas/Breed'}}
+    Breed: {type: object, properties: {id: {type: string, format: uuid}, slug: {type: string}, name: {type: string}, is_active: {type: boolean}}}
+    CategoryInput: {type: object, required: [name], properties: {slug: {type: string}, name: {type: string}, icon: {type: string}, description: {type: string}, sort_order: {type: integer}, is_active: {type: boolean}, requires_verified_seller: {type: boolean}, jurisdiction_rules: {type: object, additionalProperties: true}}}
+    ImageVariants: {type: object, properties: {thumb: {type: string, format: uri}, medium: {type: string, format: uri}, large: {type: string, format: uri}}}
+    Image:
+      type: object
+      properties: {id: {type: string, format: uuid}, thumb: {type: string}, medium: {type: string}, large: {type: string}, width: {type: integer}, height: {type: integer}, position: {type: integer}, is_cover: {type: boolean}, alt_text: {type: string}}
+    SellerBadge:
+      type: object
+      properties: {id: {type: string, format: uuid}, slug: {type: string}, display_name: {type: string}, seller_type: {type: string, enum: [individual, business]}, verified: {type: boolean, description: True only when an administrator approved verification}, city: {type: string}, state: {type: string}, logo_url: {type: string, nullable: true}}
+    ListingCard:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        title: {type: string}
+        listing_type: {type: string, enum: [sale, adoption]}
+        price_minor: {type: integer}
+        currency: {type: string}
+        age_months: {type: integer, nullable: true}
+        gender: {type: string}
+        city: {type: string}
+        state: {type: string}
+        category: {type: object, properties: {id: {type: string}, slug: {type: string}, name: {type: string}}}
+        breed: {type: object, nullable: true, properties: {id: {type: string}, slug: {type: string}, name: {type: string}}}
+        cover: {allOf: [{$ref: '#/components/schemas/ImageVariants'}], nullable: true}
+        seller: {$ref: '#/components/schemas/SellerBadge'}
+        availability: {type: string}
+        vaccination_status: {type: string}
+        featured: {type: boolean}
+        is_favourite: {type: boolean, description: False for anonymous callers}
+        distance_km: {type: number, nullable: true}
+        published_at: {type: string, format: date-time, nullable: true}
+    ListingPage:
+      type: object
+      properties: {data: {type: array, items: {$ref: '#/components/schemas/ListingCard'}}, meta: {$ref: '#/components/schemas/Meta'}}
+    ListingDetail:
+      allOf:
+        - $ref: '#/components/schemas/ListingCard'
+        - type: object
+          properties:
+            description: '{type: string}'
+            colour: {type: string}
+            vaccination_notes: {type: string}
+            health_notes: {type: string}
+            dewormed: {type: boolean, nullable: true}
+            microchipped: {type: boolean, nullable: true}
+            images: {type: array, items: {$ref: '#/components/schemas/Image'}}
+            attributes: {type: object, additionalProperties: {type: string}}
+            views_count: {type: integer}
+            seller_profile: {$ref: '#/components/schemas/SellerPublic'}
+            contact: {type: object, properties: {unlocked: {type: boolean}, requires_membership: {type: boolean}}, description: Never contains the contact details themselves}
+            disclaimer: {type: string, description: Standard welfare/health disclaimer to show buyers}
+    ListingInput:
+      type: object
+      required: [title, category_id, listing_type]
+      properties:
+        title: {type: string, minLength: 5, maxLength: 140}
+        description: '{type: string, maxLength: 5000}'
+        category_id: {type: string, format: uuid}
+        breed_id: {type: string, format: uuid, nullable: true}
+        listing_type: {type: string, enum: [sale, adoption]}
+        price_minor: {type: integer, minimum: 0, description: 'Sale: 100 (₹1) to 10000000000 (₹1 crore), validated on create/update. Adoption: forced to 0.'}
+        age_months: {type: integer, nullable: true}
+        gender: {type: string, enum: [male, female, unknown]}
+        colour: {type: string}
+        vaccination_status: {type: string, enum: [unspecified, none, partial, complete]}
+        vaccination_notes: {type: string}
+        health_notes: {type: string}
+        dewormed: {type: boolean, nullable: true}
+        microchipped: {type: boolean, nullable: true}
+        city: {type: string}
+        state: {type: string}
+        lat: {type: number, nullable: true}
+        lng: {type: number, nullable: true}
+        attributes: {type: object, additionalProperties: {type: string}}
+    ListingOwner:
+      allOf:
+        - $ref: '#/components/schemas/ListingDetail'
+        - type: object
+          properties:
+            status: {type: string, enum: [draft, pending, approved, rejected, suspended, expired, archived]}
+            rejection_reason: {type: string, nullable: true}
+            expired_reason: {type: string, nullable: true}
+            favourites_count: {type: integer}
+            enquiries_count: {type: integer}
+            expires_at: {type: string, format: date-time, nullable: true}
+            created_at: {type: string, format: date-time}
+            updated_at: {type: string, format: date-time}
+            moderation: {type: array, items: {$ref: '#/components/schemas/ModerationEvent'}}
+            missing_for_submission: {type: array, items: {type: string}, description: Human-readable checklist}
+    ModerationEvent: {type: object, properties: {action: {type: string}, reason: {type: string, nullable: true}, flags: {type: array, items: {type: string}}, moderator: {type: string, nullable: true}, created_at: {type: string, format: date-time}}}
+    ListingAnalytics:
+      type: object
+      properties:
+        views_total: {type: integer}
+        favourites_total: {type: integer}
+        enquiries_total: {type: integer}
+        series: {type: array, items: {type: object, properties: {date: {type: string, format: date}, views: {type: integer}}}}
+    SellerPublic:
+      allOf:
+        - $ref: '#/components/schemas/SellerBadge'
+        - type: object
+          properties: {bio: {type: string}, member_since: {type: string, format: date-time}, active_listings: {type: integer}, verified_at: {type: string, format: date-time, nullable: true}}
+    SellerProfileOwner:
+      allOf:
+        - $ref: '#/components/schemas/SellerPublic'
+        - type: object
+          properties:
+            business_name: {type: string, nullable: true}
+            gst_number: {type: string, nullable: true}
+            contact_phone: {type: string, nullable: true}
+            contact_whatsapp: {type: string, nullable: true}
+            contact_email: {type: string, nullable: true}
+            verification_status: {type: string, enum: [unsubmitted, pending, approved, rejected, suspended]}
+            lat: {type: number, nullable: true}
+            lng: {type: number, nullable: true}
+    SellerProfileInput:
+      type: object
+      properties: {display_name: {type: string}, seller_type: {type: string, enum: [individual, business]}, business_name: {type: string}, gst_number: {type: string}, bio: {type: string}, city: {type: string}, state: {type: string}, lat: {type: number}, lng: {type: number}, contact_phone: {type: string}, contact_whatsapp: {type: string}, contact_email: {type: string}}
+    VerificationStatus:
+      type: object
+      properties:
+        status: {type: string, enum: [unsubmitted, pending, approved, rejected, suspended]}
+        submitted_at: {type: string, format: date-time, nullable: true}
+        reviewed_at: {type: string, format: date-time, nullable: true}
+        reason: {type: string, nullable: true}
+        documents: {type: array, items: {$ref: '#/components/schemas/SellerDocument'}}
+        requirements: {type: array, items: {type: string}, description: Outstanding items before submission}
+    SellerDocument: {type: object, properties: {id: {type: string}, kind: {type: string}, original_name: {type: string}, mime_type: {type: string}, size_bytes: {type: integer}, uploaded_at: {type: string, format: date-time}}}
+    ContactInfo:
+      type: object
+      properties: {seller_name: {type: string}, phone: {type: string, nullable: true}, whatsapp: {type: string, nullable: true}, email: {type: string, nullable: true}, unlocked_at: {type: string, format: date-time}, remaining_unlocks: {type: integer, nullable: true, description: null = unlimited}}
+    BuyerProfile: {type: object, properties: {city: {type: string}, state: {type: string}, lat: {type: number, nullable: true}, lng: {type: number, nullable: true}, radius_km: {type: integer}, notify_email: {type: boolean}, notify_sms: {type: boolean}, notify_push: {type: boolean}}}
+    BuyerDashboard:
+      type: object
+      properties: {favourites: {type: integer}, enquiries: {type: integer}, unread_replies: {type: integer}, unlocked_contacts: {type: integer}, subscription: {$ref: '#/components/schemas/SubscriptionStatus'}, recent_enquiries: {type: array, items: {$ref: '#/components/schemas/EnquirySummary'}}}
+    SellerDashboard:
+      type: object
+      properties:
+        listings: {type: object, properties: {draft: {type: integer}, pending: {type: integer}, approved: {type: integer}, rejected: {type: integer}, suspended: {type: integer}, expired: {type: integer}, sold: {type: integer}}}
+        views_30d: {type: integer}
+        enquiries_total: {type: integer}
+        unread_enquiries: {type: integer}
+        verification_status: {type: string}
+        subscription: {$ref: '#/components/schemas/SubscriptionStatus'}
+        recent_enquiries: {type: array, items: {$ref: '#/components/schemas/EnquirySummary'}}
+    Message: {type: object, properties: {id: {type: string}, sender_id: {type: string}, mine: {type: boolean}, body: {type: string}, created_at: {type: string, format: date-time}, read_at: {type: string, format: date-time, nullable: true}}}
+    EnquirySummary:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [pending, viewed, responded, closed, reported]}
+        listing: {type: object, properties: {id: {type: string}, slug: {type: string}, title: {type: string}, cover: {$ref: '#/components/schemas/ImageVariants'}, availability: {type: string}}}
+        counterparty: {type: object, properties: {user_id: {type: string, format: uuid, description: For POST /blocks}, name: {type: string}, slug: {type: string, nullable: true}}, description: Seller (for buyers) or buyer first name (for sellers)}
+        last_message: {type: string}
+        last_message_at: {type: string, format: date-time}
+        unread: {type: integer}
+        created_at: {type: string, format: date-time}
+    EnquiryDetail:
+      allOf:
+        - $ref: '#/components/schemas/EnquirySummary'
+        - type: object
+          properties:
+            messages: {type: array, items: {$ref: '#/components/schemas/Message'}}
+            first_response_at: {type: string, format: date-time, nullable: true}
+            contact_unlocked: {type: boolean}
+    Plan:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        code: {type: string}
+        audience: {type: string, enum: [buyer, seller]}
+        name: {type: string}
+        description: '{type: string}'
+        price_minor: {type: integer, description: Tax-exclusive list price}
+        promo_price_minor: {type: integer, nullable: true}
+        promo_ends_at: {type: string, format: date-time, nullable: true}
+        effective_price_minor: {type: integer, description: Price after active promotion}
+        tax_rate_bps: {type: integer}
+        tax_minor: {type: integer}
+        total_minor: {type: integer, description: What the customer pays}
+        currency: {type: string}
+        billing_interval: {type: string, enum: [month, quarter, year]}
+        interval_count: {type: integer}
+        trial_days: {type: integer}
+        grace_days: {type: integer}
+        renewal_window_days: {type: integer}
+        auto_renew: {type: boolean}
+        cancellation_policy: {type: string, enum: [end_of_period, immediate]}
+        refund_window_days: {type: integer}
+        refund_policy: {type: string}
+        is_active: {type: boolean}
+        sort_order: {type: integer}
+        features: {type: array, items: {type: string}}
+        entitlements: {type: object, properties: {listing_limit: {type: integer, nullable: true}, contact_unlocks: {type: integer, nullable: true}, enquiries: {type: integer, nullable: true}, analytics: {type: boolean}, featured_slots: {type: integer, nullable: true}}, description: null = unlimited}
+    PlanInput:
+      type: object
+      required: [code, audience, name, price_minor, billing_interval]
+      properties:
+        code: {type: string}
+        audience: {type: string, enum: [buyer, seller]}
+        name: {type: string}
+        description: '{type: string}'
+        price_minor: {type: integer}
+        currency: {type: string}
+        promo_price_minor: {type: integer, nullable: true}
+        promo_starts_at: {type: string, format: date-time, nullable: true}
+        promo_ends_at: {type: string, format: date-time, nullable: true}
+        billing_interval: {type: string, enum: [month, quarter, year]}
+        interval_count: {type: integer}
+        tax_rate_bps: {type: integer}
+        trial_days: {type: integer}
+        grace_days: {type: integer}
+        renewal_window_days: {type: integer}
+        auto_renew: {type: boolean}
+        cancellation_policy: {type: string}
+        refund_window_days: {type: integer}
+        refund_policy: {type: string}
+        is_active: {type: boolean}
+        sort_order: {type: integer}
+        features: {type: array, items: {type: string}}
+        entitlements: {type: object, additionalProperties: true}
+    SubscriptionStatus:
+      type: object
+      properties:
+        audience: {type: string, enum: [buyer, seller]}
+        active: {type: boolean, description: True while status is active or grace}
+        subscription:
+          type: object
+          nullable: true
+          properties:
+            id: {type: string, format: uuid}
+            status: {type: string, enum: [active, grace, expired, cancelled, superseded, refunded]}
+            plan: {type: object, properties: {id: {type: string}, code: {type: string}, name: {type: string}}}
+            starts_at: {type: string, format: date-time}
+            current_period_end: {type: string, format: date-time}
+            grace_ends_at: {type: string, format: date-time}
+            cancel_at_period_end: {type: boolean}
+            can_renew: {type: boolean, description: Inside renewal window}
+        entitlements: {type: object, properties: {listing_limit: {type: integer, nullable: true}, listings_used: {type: integer}, contact_unlocks: {type: integer, nullable: true}, contact_unlocks_used: {type: integer}, enquiries: {type: integer, nullable: true}, enquiries_used: {type: integer}, analytics: {type: boolean}}}
+    Checkout:
+      type: object
+      properties:
+        payment: {$ref: '#/components/schemas/Payment'}
+        provider: {type: string, enum: [testmode, razorpay]}
+        provider_order_id: {type: string}
+        provider_key_id: {type: string, description: 'Razorpay public key id (never the secret)'}
+        amount_minor: {type: integer}
+        currency: {type: string}
+        test_mode: {type: boolean, description: 'True when no real money moves. UI must display a TEST MODE banner.'}
+    Payment:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [created, pending, succeeded, failed, cancelled, refunded, partially_refunded]}
+        plan: {type: object, properties: {id: {type: string}, name: {type: string}, audience: {type: string}}}
+        subtotal_minor: {type: integer}
+        tax_minor: {type: integer}
+        amount_minor: {type: integer}
+        refunded_minor: {type: integer}
+        currency: {type: string}
+        provider: {type: string}
+        failure_reason: {type: string, nullable: true}
+        invoice_id: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
+        paid_at: {type: string, format: date-time, nullable: true}
+    Invoice:
+      type: object
+      properties: {id: {type: string}, number: {type: string}, payment_id: {type: string}, bill_to_name: {type: string}, bill_to_email: {type: string}, lines: {type: array, items: {type: object, properties: {description: {type: string}, amount_minor: {type: integer}}}}, subtotal_minor: {type: integer}, tax_minor: {type: integer}, total_minor: {type: integer}, currency: {type: string}, issued_at: {type: string, format: date-time}}
+    Refund: {type: object, properties: {id: {type: string}, payment_id: {type: string}, amount_minor: {type: integer}, reason: {type: string}, status: {type: string}, created_at: {type: string, format: date-time}}}
+    Report: {type: object, properties: {id: {type: string}, reporter: {type: string}, target_type: {type: string}, target_id: {type: string}, target_label: {type: string}, reason: {type: string}, details: {type: string}, status: {type: string}, resolution: {type: string, nullable: true}, created_at: {type: string, format: date-time}}}
+    Dispute: {type: object, properties: {id: {type: string}, opened_by: {type: string}, kind: {type: string}, subject: {type: string}, message: {type: string}, status: {type: string}, resolution: {type: string, nullable: true}, listing_id: {type: string, nullable: true}, payment_id: {type: string, nullable: true}, created_at: {type: string, format: date-time}}}
+    LegalPage: {type: object, properties: {slug: {type: string}, title: {type: string}, version: {type: integer}, body_md: {type: string}, published_at: {type: string, format: date-time}}}
+    Setting: {type: object, properties: {key: {type: string}, value: {}, is_public: {type: boolean}, updated_at: {type: string, format: date-time}}}
+    AuditLog: {type: object, properties: {id: {type: integer}, actor_id: {type: string, nullable: true}, actor_email: {type: string, nullable: true}, actor_roles: {type: array, items: {type: string}}, action: {type: string}, entity_type: {type: string}, entity_id: {type: string}, metadata: {type: object, additionalProperties: true}, ip: {type: string}, request_id: {type: string}, created_at: {type: string, format: date-time}}}
+    AdminUser:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          properties: {status: {type: string, enum: [active, suspended, deleted]}, last_login_at: {type: string, format: date-time, nullable: true}, suspended_reason: {type: string, nullable: true}}
+    AdminVerification:
+      type: object
+      properties: {id: {type: string}, seller_id: {type: string}, seller: {$ref: '#/components/schemas/SellerProfileOwner'}, user_email: {type: string}, status: {type: string}, jurisdiction_state: {type: string}, submitted_at: {type: string, format: date-time}, reviewed_at: {type: string, format: date-time, nullable: true}, reason: {type: string, nullable: true}, documents: {type: array, items: {$ref: '#/components/schemas/SellerDocument'}}}
+    AdminSubscription: {type: object, properties: {id: {type: string}, user_email: {type: string}, user_name: {type: string}, audience: {type: string}, plan_name: {type: string}, status: {type: string}, starts_at: {type: string, format: date-time}, current_period_end: {type: string, format: date-time}}}
+    AdminPayment:
+      allOf:
+        - $ref: '#/components/schemas/Payment'
+        - type: object
+          properties: {user_email: {type: string}, user_name: {type: string}, provider_order_id: {type: string, nullable: true}, provider_payment_id: {type: string, nullable: true}, refunds: {type: array, items: {$ref: '#/components/schemas/Refund'}}}
+    AdminDashboard:
+      type: object
+      properties:
+        users_total: {type: integer}
+        active_buyers: {type: integer}
+        active_sellers: {type: integer}
+        pending_verifications: {type: integer}
+        listings_total: {type: integer}
+        listings_approved: {type: integer}
+        pending_moderation: {type: integer}
+        active_subscriptions: {type: integer}
+        monthly_recurring_revenue_minor: {type: integer, description: 'Sum of active subscriptions normalised to a month (excl. tax)'}
+        payments_succeeded: {type: integer}
+        payments_failed: {type: integer}
+        revenue_30d_minor: {type: integer}
+        refunds_total_minor: {type: integer}
+        open_reports: {type: integer}
+        open_disputes: {type: integer}
+        dead_jobs: {type: integer}
+        currency: {type: string}

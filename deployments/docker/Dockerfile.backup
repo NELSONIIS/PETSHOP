@@ -1,0 +1,4 @@
+# Backup sidecar: pg_dump 16 + age encryption. Built at deploy time because the backend network is offline.
+FROM postgres:16-alpine
+RUN apk add --no-cache age
+USER postgres

@@ -1,0 +1,38 @@
+{
+	email {$ACME_EMAIL}
+	# No trusted_proxies: client-supplied X-Forwarded-For is never trusted. If you put a CDN in front,
+	# add `servers { trusted_proxies static <CDN ranges> }` and switch header_up to {client_ip}.
+}
+
+# Redirect www to the apex domain.
+www.{$DOMAIN} {
+	redir https://{$DOMAIN}{uri} permanent
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Uploads are capped in the app too (images 8 MB, documents 10 MB).
+	request_body {
+		max_size 12MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		-Server
+	}
+
+	reverse_proxy web-api:8080 {
+		# Overwrite (never append) client-supplied X-Forwarded-For: the app trusts the first entry.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+		health_uri /healthz
+		health_interval 10s
+		lb_try_duration 5s
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
