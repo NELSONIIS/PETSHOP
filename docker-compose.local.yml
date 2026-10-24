@@ -1,0 +1,105 @@
+# PETORA - Complete local stack in Docker
+# Run with: docker compose -f docker-compose.local.yml up -d --build
+# Open in browser: http://localhost:8080
+# Mailpit (inbox): http://localhost:8025
+name: petora-local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: petora
+      POSTGRES_PASSWORD: petora_local_password
+      POSTGRES_DB: petora_dev
+    volumes:
+      - pgdata_local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petora -d petora_dev"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    ports:
+      - "8025:8025" # Web UI for test emails
+      - "1025:1025" # SMTP server
+    restart: unless-stopped
+
+  # One-shot: runs migrations and sets up schema
+  migrate:
+    build: { context: . }
+    environment:
+      APP_ENV: development
+      APP_BASE_URL: http://localhost:8080
+      DATABASE_URL: postgres://petora:petora_local_password@postgres:5432/petora_dev?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev_jwt_secret_must_be_at_least_32_characters_long_for_petora
+      DATA_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      PAYMENT_PROVIDER: testmode
+    command: ["setup"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: "no"
+
+  # One-shot: seeds demo users, listings and reference data
+  seed-demo:
+    build: { context: . }
+    environment:
+      APP_ENV: development
+      APP_BASE_URL: http://localhost:8080
+      DATABASE_URL: postgres://petora:petora_local_password@postgres:5432/petora_dev?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev_jwt_secret_must_be_at_least_32_characters_long_for_petora
+      DATA_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      PAYMENT_PROVIDER: testmode
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_PATH: /data/storage
+    command: ["seed", "--demo"]
+    volumes:
+      - media_local:/data/storage
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: "no"
+
+  web-api:
+    build: { context: . }
+    environment:
+      APP_ENV: development
+      APP_BASE_URL: ${APP_BASE_URL:-https://appointment-ralph-regardless-vienna.trycloudflare.com}
+      DATABASE_URL: postgres://petora:petora_local_password@postgres:5432/petora_dev?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: dev_jwt_secret_must_be_at_least_32_characters_long_for_petora
+      DATA_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      PAYMENT_PROVIDER: testmode
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_PATH: /data/storage
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:5173,https://appointment-ralph-regardless-vienna.trycloudflare.com}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_FROM: PETORA <no-reply@petora.local>
+      WORKER_INLINE: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - media_local:/data/storage
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      seed-demo: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+volumes:
+  pgdata_local: {}
+  media_local: {}

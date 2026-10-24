@@ -151,6 +151,7 @@ type ProfileInput struct {
 	Bio             *string  `json:"bio"`
 	City            *string  `json:"city"`
 	State           *string  `json:"state"`
+	Address         *string  `json:"address,omitempty"`
 	Lat             *float64 `json:"lat"`
 	Lng             *float64 `json:"lng"`
 	ContactPhone    *string  `json:"contact_phone"`
@@ -235,7 +236,11 @@ func uploadErr(err error) error {
 	case media.ErrBadType:
 		return httpx.Invalid(httpx.FieldError{Field: "file", Message: "unsupported file type"})
 	default:
-		return httpx.Invalid(httpx.FieldError{Field: "file", Message: err.Error()})
+		msg := err.Error()
+		if strings.HasPrefix(msg, "image could not be read: ") {
+			msg = strings.TrimPrefix(msg, "image could not be read: ")
+		}
+		return httpx.Invalid(httpx.FieldError{Field: "file", Message: msg})
 	}
 }
 

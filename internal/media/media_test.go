@@ -28,6 +28,11 @@ func TestProcessImage(t *testing.T) {
 	if _, err := ProcessImage(small.Bytes()); err == nil {
 		t.Fatal("tiny images must be rejected")
 	}
+	mid := bytes.Buffer{}
+	_ = png.Encode(&mid, image.NewRGBA(image.Rect(0, 0, 160, 140)))
+	if _, err := ProcessImage(mid.Bytes()); err != nil {
+		t.Fatalf("160x140 image should be accepted, got: %v", err)
+	}
 }
 
 func TestSafeFilename(t *testing.T) {

@@ -133,6 +133,7 @@ func (l *Local) PublicHandler() http.Handler {
 	root := filepath.Join(l.root, string(Public))
 	fs := http.FileServer(noListFS{http.Dir(root)})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'")

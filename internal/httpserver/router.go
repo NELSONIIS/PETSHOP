@@ -36,7 +36,7 @@ func (a *App) Router() http.Handler {
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(mw.CORS(a.Config.AllowedOrigins), mw.OriginCheck(a.Config.AllowedOrigins), mw.Authenticate(a.Auth), mw.CSRF, mw.Maintenance(a.Settings, a.Config))
+		r.Use(mw.CORS(a.Config.AllowedOrigins, !a.Config.IsProduction()), mw.OriginCheck(a.Config.AllowedOrigins, !a.Config.IsProduction()), mw.Authenticate(a.Auth), mw.CSRF, mw.Maintenance(a.Settings, a.Config))
 		r.Use(mw.RateLimit(c, "api", 600, time.Minute)) // coarse global ceiling per IP/user
 
 		// Public
@@ -57,8 +57,12 @@ func (a *App) Router() http.Handler {
 		r.Post("/webhooks/{provider}", ph.Webhook)
 
 		// Auth
+		regLimit := 30
+		if !a.Config.IsProduction() {
+			regLimit = 200
+		}
 		r.Route("/auth", func(r chi.Router) {
-			r.With(mw.RateLimit(c, "register", 10, time.Hour)).Post("/register", ah.Register)
+			r.With(mw.RateLimit(c, "register", regLimit, time.Hour)).Post("/register", ah.Register)
 			r.With(mw.RateLimit(c, "login", 10, time.Minute)).Post("/login", ah.Login)
 			r.With(mw.RateLimit(c, "refresh", 60, time.Minute)).Post("/refresh", ah.Refresh)
 			r.With(mw.RateLimit(c, "forgot", 5, time.Hour)).Post("/forgot-password", ah.ForgotPassword)

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -151,16 +152,31 @@ func isUnsafe(m string) bool {
 	return m != http.MethodGet && m != http.MethodHead && m != http.MethodOptions
 }
 
+func isAllowedOrigin(origin string, set map[string]bool, dev bool) bool {
+	if set[origin] {
+		return true
+	}
+	if dev && origin != "" {
+		if u, err := url.Parse(origin); err == nil {
+			h := u.Hostname()
+			if h == "localhost" || h == "127.0.0.1" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // OriginCheck rejects cross-site state-changing requests. Browsers always send Origin on such requests;
 // native mobile clients send none, so they pass (and cannot be CSRF'd as they hold no ambient cookies).
-func OriginCheck(allowed []string) func(http.Handler) http.Handler {
+func OriginCheck(allowed []string, dev bool) func(http.Handler) http.Handler {
 	set := map[string]bool{}
 	for _, a := range allowed {
 		set[a] = true
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if o := r.Header.Get("Origin"); o != "" && isUnsafe(r.Method) && !set[o] && !strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
+			if o := r.Header.Get("Origin"); o != "" && isUnsafe(r.Method) && !isAllowedOrigin(o, set, dev) && !strings.HasPrefix(r.URL.Path, "/api/v1/webhooks/") {
 				httpx.Fail(w, r, httpx.Forbidden("Cross-origin request blocked"))
 				return
 			}
@@ -170,14 +186,14 @@ func OriginCheck(allowed []string) func(http.Handler) http.Handler {
 }
 
 // CORS answers pre-flights and echoes allowed origins (only needed for staging/dev SPAs on another port).
-func CORS(allowed []string) func(http.Handler) http.Handler {
+func CORS(allowed []string, dev bool) func(http.Handler) http.Handler {
 	set := map[string]bool{}
 	for _, a := range allowed {
 		set[a] = true
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if o := r.Header.Get("Origin"); o != "" && set[o] {
+			if o := r.Header.Get("Origin"); o != "" && isAllowedOrigin(o, set, dev) {
 				h := w.Header()
 				h.Set("Access-Control-Allow-Origin", o)
 				h.Set("Access-Control-Allow-Credentials", "true")

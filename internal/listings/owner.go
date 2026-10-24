@@ -573,7 +573,11 @@ func (s *Service) AddImage(ctx context.Context, userID, listingID string, data [
 		case media.ErrBadType:
 			return nil, httpx.Invalid(httpx.FieldError{Field: "file", Message: "only JPEG, PNG or WebP images are accepted"})
 		default:
-			return nil, httpx.Invalid(httpx.FieldError{Field: "file", Message: err.Error()})
+			msg := err.Error()
+			if strings.HasPrefix(msg, "image could not be read: ") {
+				msg = strings.TrimPrefix(msg, "image could not be read: ")
+			}
+			return nil, httpx.Invalid(httpx.FieldError{Field: "file", Message: msg})
 		}
 	}
 	imageID := uuid.NewString()

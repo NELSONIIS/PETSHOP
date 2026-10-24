@@ -120,4 +120,13 @@ describe('plan picker', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await waitFor(() => expect(done).toHaveBeenCalledTimes(1))
   })
+
+  it('renders a trust note explaining why contact details require a small fee', async () => {
+    mockApi({ 'GET /config': cfg, 'GET /subscription-plans': { data: [plan()] } })
+    renderWith(<PlanPicker audience="buyer" open onOpenChange={() => {}} />, { user: user() })
+    expect(await screen.findByText(/Why is there a small fee to unlock seller contacts\?/i)).toBeInTheDocument()
+    expect(screen.getByText(/Protects Pets & Prevents Scams/i)).toBeInTheDocument()
+    expect(screen.getByText(/Serious Adopters Only/i)).toBeInTheDocument()
+    expect(screen.getByText(/Direct, Zero Brokerage/i)).toBeInTheDocument()
+  })
 })

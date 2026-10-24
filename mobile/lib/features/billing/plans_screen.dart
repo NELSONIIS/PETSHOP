@@ -97,6 +97,10 @@ class PlansScreen extends ConsumerWidget {
                           },
                         ),
                       ),
+                    if (audience == 'buyer') ...[
+                      const _BuyerTrustCard(),
+                      gap16,
+                    ],
                     Text(
                       'Prices include applicable taxes as shown at checkout. See the refund policy before purchasing.',
                       style: context.tt.bodySmall?.copyWith(color: context.pc.textMuted),
@@ -114,6 +118,72 @@ class PlansScreen extends ConsumerWidget {
 
   void _compare(BuildContext context, List<Plan> plans) =>
       showPetoraSheet<void>(context, builder: (_) => PlanComparison(plans: plans));
+}
+
+class _BuyerTrustCard extends StatelessWidget {
+  const _BuyerTrustCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(PSpace.md),
+      decoration: BoxDecoration(
+        color: context.pc.bgWarm,
+        borderRadius: PRadius.cardR,
+        border: Border.all(color: context.pc.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.shield_outlined, size: 18, color: PColor.primary600),
+              gap8,
+              Expanded(
+                child: Text(
+                  'Why is there a fee to unlock contacts?',
+                  style: context.tt.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          gap8,
+          Text(
+            'Browsing is 100% free. We charge a nominal membership fee (from \u20B950) to protect pets and keep our community safe and spam-free:',
+            style: context.tt.bodySmall?.copyWith(color: context.pc.textMuted),
+          ),
+          gap12,
+          _point(context, Icons.pets, 'Protects pets & prevents scams',
+              'Stops puppy mills, commercial flippers, and automated bots from harvesting phone numbers.'),
+          gap8,
+          _point(context, Icons.verified_user_outlined, 'Serious adopters only',
+              'Sellers know callers are genuine pet lovers, eliminating spam calls and time-wasters.'),
+          gap8,
+          _point(context, Icons.phone_in_talk_outlined, 'Direct, zero brokerage',
+              'Talk directly via phone & WhatsApp with verified pet parents \u2014 no middlemen or hidden fees.'),
+        ],
+      ),
+    );
+  }
+
+  Widget _point(BuildContext context, IconData icon, String title, String body) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: PColor.primary600),
+        gap8,
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: context.tt.labelMedium?.copyWith(fontWeight: FontWeight.w600)),
+              Text(body, style: context.tt.bodySmall?.copyWith(color: context.pc.textMuted)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class PlanComparison extends StatelessWidget {

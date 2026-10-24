@@ -379,12 +379,17 @@ func (h handlers) contactUnlock(w http.ResponseWriter, r *http.Request) {
 func (h handlers) createEnquiry(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Message string `json:"message"`
+		Body    string `json:"body"`
 	}
 	if err := httpx.Decode(w, r, &in); err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
-	out, err := h.Enquiries.Create(r.Context(), authctx.From(r.Context()), id(r), in.Message)
+	msg := in.Message
+	if msg == "" {
+		msg = in.Body
+	}
+	out, err := h.Enquiries.Create(r.Context(), authctx.From(r.Context()), id(r), msg)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
@@ -414,13 +419,18 @@ func (h handlers) getEnquiry(side string) http.HandlerFunc {
 func (h handlers) replyEnquiry(side string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Body string `json:"body"`
+			Body    string `json:"body"`
+			Message string `json:"message"`
 		}
 		if err := httpx.Decode(w, r, &in); err != nil {
 			httpx.Fail(w, r, err)
 			return
 		}
-		out, err := h.Enquiries.Reply(r.Context(), authctx.From(r.Context()), id(r), side, in.Body)
+		b := in.Body
+		if b == "" {
+			b = in.Message
+		}
+		out, err := h.Enquiries.Reply(r.Context(), authctx.From(r.Context()), id(r), side, b)
 		if err != nil {
 			httpx.Fail(w, r, err)
 			return

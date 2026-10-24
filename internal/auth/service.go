@@ -145,8 +145,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput, ci ClientInfo)
 	})
 	if err != nil {
 		if database.IsUniqueViolation(err, "users_email_key") || database.IsUniqueViolation(err, "users_phone_key") {
-			// Same message either way: do not confirm which identifier exists beyond what the form needs.
-			return nil, nil, httpx.Conflict(httpx.CodeConflict, "An account with these details already exists. Try logging in.")
+			return nil, nil, httpx.Conflict(httpx.CodeConflict, "An account with this email or mobile number already exists. Try logging in or use 'Forgot password'.")
 		}
 		return nil, nil, err
 	}

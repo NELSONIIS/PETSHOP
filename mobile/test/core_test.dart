@@ -17,6 +17,7 @@ void main() {
   group('AppConfig', () {
     test('defaults per environment', () {
       expect(AppConfig.resolve('dev', '', release: false).apiBaseUrl, 'http://10.0.2.2:8080/api/v1');
+      expect(AppConfig.resolve('dev', '', release: false, isWeb: true).apiBaseUrl, 'http://localhost:8080/api/v1');
       expect(AppConfig.resolve('staging', '', release: true).apiBaseUrl, 'https://staging.petora.in/api/v1');
       expect(AppConfig.resolve('prod', '', release: true).apiBaseUrl, 'https://petora.in/api/v1');
     });

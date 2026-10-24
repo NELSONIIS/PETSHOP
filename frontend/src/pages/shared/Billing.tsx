@@ -4,7 +4,7 @@ import { Printer } from 'lucide-react'
 import { api, isApiError } from '@/api/client'
 import { useConfig, useGet, usePlans, useSend, useSubscription } from '@/api/hooks'
 import type { Invoice, Payment, Plan } from '@/api/types'
-import { CheckoutDialog, PlanCard } from '@/components/Billing'
+import { BuyerTrustNote, CheckoutDialog, PlanCard } from '@/components/Billing'
 import { PageHeader } from '@/components/Section'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/Dialog'
@@ -72,9 +72,12 @@ export function MembershipPage({ audience }: { audience: 'buyer' | 'seller' }) {
       )}
       <h2 className="text-lg">{s?.active ? 'Change or extend your plan' : 'Choose a plan'}</h2>
       {plans.isLoading ? <Skeleton className="h-56 w-full" /> : plans.error ? <ErrorState error={plans.error} onRetry={() => plans.refetch()} /> : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {plans.items?.map((p) => <PlanCard key={p.id} plan={p} current={cur?.plan.id === p.id && s?.active} cta={<Button variant="accent" onClick={() => setChosen(p)}>{cur?.plan.id === p.id && s?.active ? 'Renew / extend' : `Choose ${p.name}`}</Button>} />)}
-          {plans.items?.length === 0 && <EmptyState title="No plans available" />}
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {plans.items?.map((p) => <PlanCard key={p.id} plan={p} current={cur?.plan.id === p.id && s?.active} cta={<Button variant="accent" onClick={() => setChosen(p)}>{cur?.plan.id === p.id && s?.active ? 'Renew / extend' : `Choose ${p.name}`}</Button>} />)}
+            {plans.items?.length === 0 && <EmptyState title="No plans available" />}
+          </div>
+          {audience === 'buyer' && <BuyerTrustNote />}
         </div>
       )}
       <p className="text-xs text-muted">Membership gives access to features only; it does not guarantee a pet is available or that a transaction will succeed. See the <Link to="/refund-policy" className="underline">refund policy</Link>.</p>

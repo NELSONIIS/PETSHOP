@@ -112,6 +112,7 @@ type Input struct {
 	BreedID           *string           `json:"breed_id"`
 	ListingType       string            `json:"listing_type"`
 	PriceMinor        int64             `json:"price_minor"`
+	Currency          string            `json:"currency,omitempty"`
 	AgeMonths         *int              `json:"age_months"`
 	Gender            string            `json:"gender"`
 	Colour            string            `json:"colour"`

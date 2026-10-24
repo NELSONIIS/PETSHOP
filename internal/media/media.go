@@ -80,8 +80,8 @@ func ProcessImage(data []byte) ([]Variant, error) {
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxSide || cfg.Height > maxSide || cfg.Width*cfg.Height > maxPixels {
 		return nil, fmt.Errorf("%w: dimensions too large", ErrBadImage)
 	}
-	if cfg.Width < 200 || cfg.Height < 200 {
-		return nil, fmt.Errorf("%w: image must be at least 200x200 pixels", ErrBadImage)
+	if cfg.Width < 100 || cfg.Height < 100 {
+		return nil, fmt.Errorf("%w: image must be at least 100x100 pixels", ErrBadImage)
 	}
 	src, err := imaging.Decode(bytes.NewReader(data), imaging.AutoOrientation(true))
 	if err != nil {

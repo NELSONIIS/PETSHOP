@@ -67,7 +67,7 @@ function ImageManager({ listingId, images }: { listingId: string; images: Image[
   }
   return (
     <div className="space-y-3">
-      <DropZone label="Add photos" hint={`JPEG, PNG or WebP · up to ${maxMb} MB each · ${images.length}/${maxImages} used`} accept="image/jpeg,image/png,image/webp" multiple onFiles={up.add} disabled={images.length >= maxImages} />
+      <DropZone label="Add photos" hint={`JPEG, PNG or WebP · min 100x100 px · up to ${maxMb} MB each · ${images.length}/${maxImages} used`} accept="image/jpeg,image/png,image/webp" multiple onFiles={up.add} disabled={images.length >= maxImages} />
       <UploadList items={up.items} rejected={up.rejected} onCancel={up.cancel} onRetry={up.retry} onDismiss={up.dismiss} />
       {images.length > 0 && (
         <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Listing photos">

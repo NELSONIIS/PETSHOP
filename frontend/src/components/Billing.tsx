@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, CheckCircle2, Clock, FlaskConical, XCircle } from 'lucide-react'
+import { Check, CheckCircle2, Clock, FlaskConical, ShieldCheck, XCircle } from 'lucide-react'
 import { api, isApiError } from '@/api/client'
 import { usePlans, useConfig } from '@/api/hooks'
 import { useAuth } from '@/auth/AuthContext'
@@ -16,7 +16,8 @@ const intervalLabel = (p: Plan) => {
   const unit = { month: 'month', quarter: 'quarter', year: 'year' }[p.billing_interval]
   return n === 1 ? `/${unit}` : `/${n} ${unit}s`
 }
-const lim = (v: number | null | undefined, one: string) => (v == null ? `Unlimited ${one}s` : `${v} ${one}${v === 1 ? '' : 's'}`)
+const lim = (v: number | null | undefined, one: string, plural?: string) =>
+  (v == null ? `Unlimited ${plural ?? `${one}s`}` : `${v} ${v === 1 ? one : (plural ?? `${one}s`)}`)
 
 export function entitlementLines(p: Plan): string[] {
   const e = p.entitlements ?? {}
@@ -27,13 +28,20 @@ export function entitlementLines(p: Plan): string[] {
     out.push(e.analytics ? 'Listing analytics included' : 'No analytics')
   } else {
     out.push(lim(e.contact_unlocks, 'seller contact unlock'))
-    out.push(lim(e.enquiries, 'enquiry'))
+    out.push(lim(e.enquiries, 'enquiry', 'enquiries'))
   }
   return out
 }
 
 export function PlanCard({ plan, cta, highlight, current }: { plan: Plan; cta?: ReactNode; highlight?: boolean; current?: boolean }) {
   const promo = plan.promo_price_minor != null && plan.effective_price_minor < plan.price_minor
+  const features = Array.from(new Set([
+    ...entitlementLines(plan),
+    ...(plan.features ?? []).filter((f) => {
+      const lower = f.toLowerCase()
+      return !lower.includes('contact unlock') && !lower.includes('enquir')
+    }),
+  ]))
   return (
     <article className={cn('card flex flex-col gap-3 p-4', highlight && 'border-primary-500 ring-1 ring-primary-500')} aria-label={`${plan.name} plan`}>
       <div className="flex items-start justify-between gap-2">
@@ -49,7 +57,7 @@ export function PlanCard({ plan, cta, highlight, current }: { plan: Plan; cta?: 
         <p className="text-xs text-muted tnum">{plan.tax_rate_bps > 0 ? `+ ${(plan.tax_rate_bps / 100).toString()}% tax · total ${formatMoney(plan.total_minor, plan.currency)}` : 'Taxes included'}{promo && plan.promo_ends_at ? ` · offer ends ${formatDate(plan.promo_ends_at)}` : ''}</p>
       </div>
       <ul className="flex-1 space-y-1.5 text-sm">
-        {[...entitlementLines(plan), ...(plan.features ?? [])].map((f) => (
+        {features.map((f) => (
           <li key={f} className="flex items-start gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0 text-primary-600" aria-hidden />{f}</li>
         ))}
       </ul>
@@ -248,6 +256,48 @@ function CheckoutInner({ plan, onOpenChange, onSuccess }: { plan: Plan; onOpenCh
 }
 const Row = ({ k, v }: { k: string; v: ReactNode }) => <div className="flex items-center justify-between px-3 py-2"><dt className="text-muted">{k}</dt><dd className="tnum">{v}</dd></div>
 
+/** A reassuring explanation of why buyer membership fees are charged. */
+export function BuyerTrustNote({ className }: { className?: string }) {
+  return (
+    <section aria-label="Why contact details require membership" className={cn('rounded-card border border-primary-200/80 bg-warm/80 p-4 text-xs dark:border-primary-900/40 dark:bg-warm/30', className)}>
+      <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+        <ShieldCheck className="h-4 w-4 shrink-0 text-primary-600" aria-hidden />
+        <span>Why is there a small fee to unlock seller contacts?</span>
+      </div>
+      <p className="mt-1 text-muted leading-relaxed">
+        Browsing and searching pets is 100% free. We charge a nominal membership fee (from just ₹50) to protect pets and keep our community safe and spam-free:
+      </p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div className="flex items-start gap-2">
+          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary-600" aria-hidden />
+          <div>
+            <strong className="block font-semibold text-ink">Protects Pets &amp; Prevents Scams</strong>
+            <span className="text-muted">Prevents puppy mills, commercial flippers, and automated bots from harvesting phone numbers.</span>
+          </div>
+        </div>
+        <div className="flex items-start gap-2">
+          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary-600" aria-hidden />
+          <div>
+            <strong className="block font-semibold text-ink">Serious Adopters Only</strong>
+            <span className="text-muted">Sellers know callers are genuine pet lovers, eliminating spam calls and time-wasters.</span>
+          </div>
+        </div>
+        <div className="flex items-start gap-2">
+          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary-600" aria-hidden />
+          <div>
+            <strong className="block font-semibold text-ink">Direct, Zero Brokerage</strong>
+            <span className="text-muted">Talk directly via phone &amp; WhatsApp with verified pet parents — no middlemen or hidden commissions.</span>
+          </div>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line/60 pt-2 text-[11px] text-muted">
+        <span>🔒 Safe &amp; verified direct communication</span>
+        <span>One-time access · No recurring auto-debit</span>
+      </div>
+    </section>
+  )
+}
+
 /** Lists plans for an audience and launches checkout. */
 export function PlanPicker({ audience, open, onOpenChange, onPurchased, suggestedIds }: {
   audience: 'buyer' | 'seller'; open: boolean; onOpenChange: (o: boolean) => void; onPurchased?: () => void; suggestedIds?: string[]
@@ -263,9 +313,12 @@ export function PlanPicker({ audience, open, onOpenChange, onPurchased, suggeste
     <>
       <Dialog open={open && !chosen} onOpenChange={onOpenChange} title="Choose a membership" description="Unlock seller contact details and enquiries." size="lg">
         {q.isLoading ? <Skeleton className="h-40 w-full" /> : q.error ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {plans?.map((p) => <PlanCard key={p.id} plan={p} cta={<Button variant="accent" onClick={() => setChosen(p)}>Choose {p.name}</Button>} />)}
-            {plans?.length === 0 && <p className="text-sm text-muted">No plans are available right now.</p>}
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {plans?.map((p) => <PlanCard key={p.id} plan={p} cta={<Button variant="accent" onClick={() => setChosen(p)}>Choose {p.name}</Button>} />)}
+              {plans?.length === 0 && <p className="text-sm text-muted">No plans are available right now.</p>}
+            </div>
+            {audience === 'buyer' && <BuyerTrustNote />}
           </div>
         )}
       </Dialog>

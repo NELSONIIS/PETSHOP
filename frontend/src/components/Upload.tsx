@@ -39,7 +39,8 @@ export function useUploads(o: Opts) {
     }).catch((e) => {
       aborts.current.delete(item.id)
       if (isApiError(e) && e.code === 'aborted') { setItems((xs) => xs.filter((x) => x.id !== item.id)); return }
-      patch(item.id, { status: 'error', error: isApiError(e) ? e.message : 'Upload failed' })
+      const errDetail = isApiError(e) && e.details?.length ? e.details.map((d) => d.message).join(', ') : undefined
+      patch(item.id, { status: 'error', error: errDetail || (isApiError(e) ? e.message : 'Upload failed') })
     })
   }, [o, patch])
 
