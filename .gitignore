@@ -12,4 +12,5 @@ mobile/.dart_tool/
 mobile/build/
 mobile/android/build/
 mobile/web/
+.10x/
 .DS_Store
